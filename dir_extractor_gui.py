@@ -14,9 +14,27 @@ except ImportError:
 
 APP_DIR = Path(__file__).resolve().parent
 OUTPUT_FILE = APP_DIR / "dir_ok.txt"
+DEEPER_LEVEL = 4
+LEVEL_OPTIONS = (
+    (0, "根路径"),
+    (1, "1级"),
+    (2, "2级"),
+    (3, "3级"),
+    (DEEPER_LEVEL, "4级及以上"),
+)
 
 
-def extract_directories_from_url(raw_url: str) -> list[str]:
+def should_include_level(level: int, selected_levels: set[int] | None) -> bool:
+    if selected_levels is None:
+        return True
+
+    if level >= DEEPER_LEVEL:
+        return DEEPER_LEVEL in selected_levels
+
+    return level in selected_levels
+
+
+def extract_directories_from_url(raw_url: str, selected_levels: set[int] | None = None) -> list[str]:
     url = raw_url.strip()
     if not url or "://" not in url:
         return []
@@ -36,7 +54,7 @@ def extract_directories_from_url(raw_url: str) -> list[str]:
     path = parsed.path or "/"
 
     if path in ("", "/"):
-        return [base_url]
+        return [base_url] if should_include_level(0, selected_levels) else []
 
     segments = [segment for segment in path.split("/") if segment]
 
@@ -52,13 +70,15 @@ def extract_directories_from_url(raw_url: str) -> list[str]:
 
     results: list[str] = []
     for index in range(len(directory_segments), 0, -1):
-        results.append(base_url + "/".join(directory_segments[:index]) + "/")
+        if should_include_level(index, selected_levels):
+            results.append(base_url + "/".join(directory_segments[:index]) + "/")
 
-    results.append(base_url)
+    if should_include_level(0, selected_levels):
+        results.append(base_url)
     return results
 
 
-def process_input_lines(text: str) -> tuple[list[str], int]:
+def process_input_lines(text: str, selected_levels: set[int] | None = None) -> tuple[list[str], int]:
     unique_results: list[str] = []
     seen: set[str] = set()
     valid_line_count = 0
@@ -68,7 +88,7 @@ def process_input_lines(text: str) -> tuple[list[str], int]:
         if not line:
             continue
 
-        extracted = extract_directories_from_url(line)
+        extracted = extract_directories_from_url(line, selected_levels)
         if not extracted:
             continue
 
@@ -129,6 +149,10 @@ class DirectoryExtractorApp:
             value="支持浏览 txt、拖入 txt、或直接粘贴文本。处理完成后自动写入 dir_ok.txt。"
         )
         self.output_path_var = tk.StringVar(value=f"输出文件：{OUTPUT_FILE}")
+        self.level_vars = {
+            level: tk.BooleanVar(value=True)
+            for level, _label in LEVEL_OPTIONS
+        }
 
         self.build_ui()
         self.enable_drop_support()
@@ -137,15 +161,17 @@ class DirectoryExtractorApp:
         outer = ttk.Frame(self.root, padding=12)
         outer.pack(fill="both", expand=True)
 
+        self.build_level_selector(outer)
+
         top_bar = ttk.Frame(outer)
-        top_bar.pack(fill="x")
+        top_bar.pack(fill="x", pady=(10, 0))
 
         ttk.Button(top_bar, text="浏览 TXT", command=self.load_files).pack(side="left")
+        ttk.Button(top_bar, text="清空", command=self.clear_all).pack(side="left", padx=(8, 0))
         ttk.Button(top_bar, text="处理并导出", command=self.process_current_text).pack(
             side="left",
             padx=(8, 0),
         )
-        ttk.Button(top_bar, text="清空", command=self.clear_all).pack(side="left", padx=(8, 0))
 
         ttk.Label(
             outer,
@@ -190,6 +216,58 @@ class DirectoryExtractorApp:
 
         ttk.Label(outer, textvariable=self.output_path_var).pack(anchor="w", pady=(10, 2))
         ttk.Label(outer, textvariable=self.status_var, foreground="#444").pack(anchor="w")
+
+    def build_level_selector(self, parent: ttk.Frame) -> None:
+        level_frame = ttk.Labelframe(
+            parent,
+            text="提取范围（可单选/多选，默认全选=当前功能）",
+        )
+        level_frame.pack(fill="x", pady=(10, 0))
+
+        checks_frame = ttk.Frame(level_frame)
+        checks_frame.pack(side="left", padx=8, pady=8)
+
+        for level, label in LEVEL_OPTIONS:
+            ttk.Checkbutton(
+                checks_frame,
+                text=label,
+                variable=self.level_vars[level],
+            ).pack(side="left", padx=(0, 10))
+
+        shortcuts_frame = ttk.Frame(level_frame)
+        shortcuts_frame.pack(side="left", padx=(8, 8), pady=8)
+
+        ttk.Button(shortcuts_frame, text="全选", command=self.select_all_levels).pack(
+            side="left",
+            padx=(0, 6),
+        )
+        ttk.Button(shortcuts_frame, text="全不选", command=lambda: self.set_levels(set())).pack(
+            side="left",
+            padx=(0, 6),
+        )
+
+    def get_selected_levels(self) -> set[int]:
+        return {level for level, variable in self.level_vars.items() if variable.get()}
+
+    def set_levels(self, selected_levels: set[int]) -> None:
+        for level, variable in self.level_vars.items():
+            variable.set(level in selected_levels)
+        self.status_var.set(f"已选择提取范围：{self.describe_selected_levels(selected_levels)}。")
+
+    def select_all_levels(self) -> None:
+        self.set_levels({level for level, _label in LEVEL_OPTIONS})
+
+    def describe_selected_levels(self, selected_levels: set[int]) -> str:
+        all_levels = {level for level, _label in LEVEL_OPTIONS}
+        if selected_levels == all_levels:
+            return "全部路径"
+
+        labels = [
+            label
+            for level, label in LEVEL_OPTIONS
+            if level in selected_levels
+        ]
+        return "、".join(labels) if labels else "未选择"
 
     def enable_drop_support(self) -> None:
         self.file_drop = WindowsFileDrop(self.root, self.handle_dropped_files)
@@ -257,7 +335,12 @@ class DirectoryExtractorApp:
             messagebox.showinfo("提示", "请先导入或粘贴文本内容。")
             return
 
-        results, valid_lines = process_input_lines(input_content)
+        selected_levels = self.get_selected_levels()
+        if not selected_levels:
+            messagebox.showinfo("提示", "请至少勾选一个提取范围。")
+            return
+
+        results, valid_lines = process_input_lines(input_content, selected_levels)
         output_content = "\n".join(results)
 
         self.output_text.configure(state="normal")
@@ -269,7 +352,8 @@ class DirectoryExtractorApp:
 
         total_lines = sum(1 for line in input_content.splitlines() if line.strip())
         self.status_var.set(
-            f"处理完成：输入 {total_lines} 行，可识别 URL {valid_lines} 行，输出 {len(results)} 行。"
+            f"处理完成：输入 {total_lines} 行，可识别 URL {valid_lines} 行，"
+            f"提取范围 {self.describe_selected_levels(selected_levels)}，输出 {len(results)} 行。"
         )
 
     def clear_all(self) -> None:
